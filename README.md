@@ -5,6 +5,18 @@
 
 界面参考了象棋 AI 在线分析网站的布局：左侧棋盘、右侧分析面板。
 
+**仓库**：<https://github.com/alxy1018-ctrl/xiangqi-pikafish>
+
+**引擎与权重已随仓库附带**，克隆下来双击 `start.cmd` 就能下，不需要另外配置。
+
+```bash
+git clone https://github.com/alxy1018-ctrl/xiangqi-pikafish.git
+```
+
+> 仓库约 56 MB，其中 55 MB 是引擎与神经网络权重。只想要源码的话：
+> `git clone --filter=blob:none --sparse ...` 之后再按需检出，
+> 然后设 `XQ_ENGINE` 指向你自己的 Pikafish。
+
 ---
 
 ## 怎么开始
