@@ -1,0 +1,21 @@
+# 运行时不产生文件，这里只排除开发过程中的杂物
+
+# 日志 / 临时文件
+*.log
+nohup.out
+*.tmp
+*.bak
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# 依赖目录（本项目零依赖，纯 node 内置模块，保险起见列上）
+node_modules/
+
+# 引擎文件是**有意提交**的（约 57 MB），不要在这里排除 —— 见 NOTICE.md
+# engine/
