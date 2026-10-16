@@ -1,5 +1,10 @@
 # 中国象棋 · 皮卡鱼 Pikafish 对弈
 
+中文 | [English](README.en.md)
+
+> **Chinese chess against Pikafish, running locally.** A single-page board with a live analysis panel (evaluation, depth, candidate moves) and a 7-step strength slider. The engine plays Red, you play Black; engine and NNUE weights are bundled, so a clone plus `start.cmd` is all it takes. Full English documentation: **[README.en.md](README.en.md)**.
+> The interface itself is in Chinese, and the English document quotes its strings as-is.
+
 一个本地跑的中国象棋对弈页面：**Pikafish 引擎执红方（棋盘下方），你执黑方（上方）**，
 带实时分析面板（评估分、搜索深度、候选着法）和棋力难度滑块。
 
@@ -69,7 +74,7 @@ start.cmd
 > 「黑方先走」的实现说明：你那步黑棋是**抢在红方之前**走的。
 > 引擎内部对局面的理解仍是"红方未动"，所以必须用 FEN 而不是走子序列下发局面 ——
 > `position startpos moves ...` 隐含红先，第一步下黑棋会让 Pikafish 直接崩掉
-> （实测 exit code 1）。细节见下面「已知限制」上方那段。
+> （实测 exit code 1）。细节见下面「三个必须知道的实现约定」那节。
 
 ---
 
@@ -121,7 +126,7 @@ start.cmd
 └── test/
     ├── board.test.mjs           84 项：perft、四类特殊规则、将死、坐标回归
     ├── engine.test.mjs          24 项：握手、搜索、超时、关闭、与规则引擎交叉验证
-    ├── api.test.mjs             76 项：端到端流程、语义三段式、非法着法、悔棋、难度
+    ├── api.test.mjs             74 项：端到端流程、语义三段式、非法着法、悔棋、难度
     ├── frontend.test.mjs        49 项：把前端/集成 bug 的根因固化成断言
     ├── perft-crosscheck.test.mjs 用 Pikafish 做独立裁判比对 perft（19 项）
     ├── leak-probe.mjs           内存累积探测（连续分析，看是否泄漏）
@@ -153,9 +158,10 @@ $node = 'C:\Users\LXY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bi
 
 ### 验证强度
 
-- **214 项断言全部通过**（84 + 24 + 76 + 30）。
+- **231 项断言全部通过**（84 + 24 + 74 + 49，三处数字由 2026-10-16 重跑四套测试实测）。
 - **perft 交叉验证 19/19 一致**：我的 JS 规则引擎与 Pikafish（独立 C++ 实现）在 6 个
-  不同局面上给出完全相同的节点数，包括开局 `depth 4 = 3,290,240`。
+  不同局面上给出完全相同的节点数，包括开局 `depth 4 = 3,290,240`
+  （这个数另用 Pikafish 自带的 `go perft 4` 直接核过）。
   这条是**唯一脱离自身实现的独立证据**，用来排除"生成器与校验器共享同一偏差"的风险。
 - **真实对局走通**：`炮二平五 卒3进1 炮五进四 卒7进1 炮八平五 马2进2 前炮退二`，
   每步都复核了引擎着法合法性与局面一致性。
@@ -254,6 +260,10 @@ Get-Process -Name 'Pikafish*' -ErrorAction SilentlyContinue | Stop-Process -Forc
 
 那是**我历次排查留下的临时脚本**（编码探测、会话日志解析、模型连通性测试之类），
 不是这个项目产生的。要清理可以直接删，里面只有少数几个 README 笔记值得留。
+
+---
+
+## 已知限制
 
 - **不支持联网对战**。Pikafish 的 NNUE 权重协议明确禁止用于作弊场景；本地自己玩没问题。
 - **没有开局库**。Pikafish 本身不带书，同一个开局它可能反复走同样的着法。
