@@ -2,12 +2,12 @@
  * 中国象棋对弈服务：静态页 + API + Pikafish 引擎桥接。
  *
  * 核心设计：**局面唯一事实来源是 moves 数组**。
- * 引擎侧局面永远用 `position startpos moves ...` 从该数组推导，
+ * 引擎侧局面永远从该数组重建，并以 FEN 下发，
  * 本地不维护第二份局面 —— 这样悔棋、重开都不会出现两侧不同步。
  *
- * 执子约定：**引擎恒执红方（下方）**，用户执黑方（上方）。
- * 但允许用户在红方轮走时替红方走一步（"代走"），
- * 走完后引擎会在轮到红方时正常接管。见 advance() 的注释。
+ * 执子约定：**用户可以选边**（game.userColor，默认执黑），引擎固定执另一方。
+ * 红方永远先行：用户执红就直接走红方第一步；用户执黑就等「让引擎先走」。
+ * 换边只在对局开始前（moves 为空）可用，见 /api/swap-sides。
  */
 
 import { createServer } from 'node:http';
@@ -65,30 +65,25 @@ const game = {
   /** 对局结果：null 表示进行中 */
   result: null,
   /**
-   * 黑方先走模式。
+   * 用户执哪一方（RED / BLACK），默认执黑。
    *
-   * 中国象棋规则是红先，但用户执黑时希望能自己先走一步。
-   * 打开这个开关后：**引擎（红方）原地不动**，轮到用户在红方回合替黑方走第一步；
-   * 这一步走完，引擎就接管红方正常应手，此后黑白交替。
+   * 引擎固定执另一方；红方永远先行：
+   *   - 用户执红：用户直接走红方第一步，引擎执黑应手；
+   *   - 用户执黑：引擎执红，开局等「让引擎先走」。
    *
-   * 语义上等价于"把黑方这一步提到红方之前"，所以引擎侧的局面序列依旧是合法的
-   * （引擎看到的仍然是"红方该走"的局面，只是此时黑方已经动过一步）。
+   * 只在对局开始前（moves 为空）可以通过 /api/swap-sides 切换；
+   * 「重新开始」保留这个选择，不回到默认执黑。
    */
-  blackFirst: false,
+  userColor: BLACK,
   /** 引擎搜索次数（含应手与分析），用于观察是否有随次数累积的东西 */
   searchCount: 0,
   /** 分析次数（面板分析，不含应手） */
   analysisCount: 0,
 };
 
-/**
- * 现在是否允许用户走子。
- * 常规情况只有轮到自己（黑方）时能走；黑方先走模式下，
- * 红方回合且未走子时也允许用户动黑棋。
- */
+/** 现在是否允许用户走子：只有轮到用户执的那一方时才允许。 */
 function userMayMoveNow(pos) {
-  if (pos.turn === BLACK) return true;
-  return game.blackFirst && game.moves.length === 0 && pos.turn === RED;
+  return pos.turn === game.userColor;
 }
 
 let engine = null;
@@ -97,23 +92,15 @@ let engineError = null;
 /**
  * 由 moves 推导当前局面。
  *
- * 轮走方不能简单地"走一步翻一次"——黑方先走模式下，用户那步黑棋是**抢在红方之前**走的
- * （见 game.blackFirst）。所以两种模式的奇偶关系不同：
- *
- *   常规模式（红先）  : 奇数步 = 刚走完红棋 → 该黑方走；偶数步 → 该红方走
- *   黑方先走模式      : 第 1 步是黑棋（抢走），所以奇数步 → 该红方走；偶数步 → 该黑方走
- *
- * 这样 moves 数组依旧能唯一确定局面，不必额外维护轮走方状态。
+ * 红方永远先行，合法的走子序列严格交替，`makeMove` 自己会翻轮走方；
+ * 因此不需要再按某种模式手工修正奇偶。moves 依旧是唯一事实来源。
  */
-const currentPosition = () => {
-  const pos = positionFromMoves(game.moves);
-  const odd = game.moves.length % 2 === 1;
-  const blackFirstActive = game.blackFirst && game.moves.length > 0;
-  pos.turn = blackFirstActive
-    ? (odd ? RED : BLACK)      // 黑方抢走一步后，轮到红方（引擎）
-    : (odd ? BLACK : RED);     // 红先：红棋走完轮黑方
-  return pos;
-};
+const currentPosition = () => positionFromMoves(game.moves);
+
+const sideName = (color) => (color === RED ? '红方' : '黑方');
+const playerName = (color) => (color === game.userColor ? '你' : 'Pikafish');
+/** 结果文案：红方（你）/ 黑方（Pikafish）/ …，按实际执子显示 */
+const winnerName = (color) => `${sideName(color)}（${playerName(color)}）`;
 
 // ---------------------------------------------------------------------------
 // 中文记谱（"炮二平五"这种），仅用于显示棋谱
@@ -181,11 +168,10 @@ async function initEngine() {
  *
  * **一律用 FEN 下发当前局面**，并把轮走方如实写进去。
  *
- * 为什么不用 `position startpos moves ...`：那个形式隐含"红先"。
- * 黑方先走模式的走子序列以**黑棋**开头，直接下发会让 Pikafish 崩掉
- * （实测 exit code 1，或挂死不返回 bestmove）。
- * FEN 没有这个隐含前提，正常局面用起来也完全等价，所以干脆统一走 FEN，
- * 不再为两种模式写两套下发逻辑 —— 少一套分支就少一个踩坑点。
+ * 为什么不用 `position startpos moves ...`：那个形式隐含"红先"，
+ * 而且要求从开局严格交替下发。这里已经有完整局面（moves 重建），
+ * 直接发 FEN 把轮走方显式带上 —— 少一套"什么时候能用 startpos"的判断。
+ * FEN 也是引擎直接支持的形式，正常局面用起来完全等价。
  *
  * @param {Position} pos 当前局面
  * @returns {{moves:string[], fen:string, sideToMove:string}}
@@ -204,7 +190,8 @@ function engineRequest(pos) {
 const snapshotBoard = (pos) => pos.board.join('');
 
 /**
- * 推进对局：只要轮到红方且引擎可用，就让引擎走一步，直到轮到黑方或对局结束。
+ * 推进对局：只要轮到引擎执的那一方且引擎可用，就让引擎走一步，
+ * 直到轮到用户或对局结束。
  *
  * @param {object} [opts] { allowEngine: 是否允许引擎走子 }
  */
@@ -217,15 +204,15 @@ async function advance({ allowEngine = true } = {}) {
     if (st.over) {
       game.result = {
         winner: st.winner,
-        winnerName: st.winner === RED ? '红方（Pikafish）' : '黑方（你）',
+        winnerName: winnerName(st.winner),
         reason: st.reason === 'checkmate' ? '将死' : '困毙',
       };
       break;
     }
 
-    // 黑方走 → 交给用户，退出循环
-    if (pos.turn === BLACK) break;
-    // 红方轮走但引擎不可用/不允许 → 也退出
+    // 轮到用户执子 → 交还给用户，退出循环
+    if (pos.turn === game.userColor) break;
+    // 轮到引擎但引擎不可用/不允许 → 也退出
     if (!allowEngine || !engine || !engine.ready) break;
 
     game.thinking = true;
@@ -246,7 +233,7 @@ async function advance({ allowEngine = true } = {}) {
     if (!uci) break;   // 无着法：status() 已在上面处理过，剩下的情况视为引擎异常
 
     const mv = moveFromUci(uci);
-    const legal = pos.generateLegalMoves(RED).some((m) => m.from === mv.from && m.to === mv.to);
+    const legal = pos.generateLegalMoves(pos.turn).some((m) => m.from === mv.from && m.to === mv.to);
     if (!legal) {
       engineError = `引擎给出非法着法 ${uci}（内部 ${mv.from}→${mv.to}），已忽略`;
       console.error('[引擎] ' + engineError);
@@ -356,7 +343,7 @@ function statePayload() {
   if (st.over && !game.result) {
     game.result = {
       winner: st.winner,
-      winnerName: st.winner === RED ? '红方（Pikafish）' : '黑方（你）',
+      winnerName: winnerName(st.winner),
       reason: st.reason === 'checkmate' ? '将死' : '困毙',
     };
   }
@@ -374,11 +361,11 @@ function statePayload() {
     engineError,
     lastMove: game.moves.length ? game.moves[game.moves.length - 1] : null,
     check: pos.isInCheck(pos.turn),
-    /** 黑方先走模式是否已打开 */
-    blackFirst: game.blackFirst,
+    /** 用户执哪一方（red / black） */
+    userColor: game.userColor,
     /** 现在能不能点棋子走子（前端据此决定是否允许交互与怎么显示状态） */
     canUserMove: userMayMoveNow(pos) && !game.thinking && !st.over,
-    /** 开局还没走子（用于决定那两个"谁先走"按钮是否可用） */
+    /** 开局还没走子（用于决定「换边」「让引擎先走」是否可用） */
     atStart: game.moves.length === 0,
     /**
      * 运行期计数与内存占用。用于排查"跑久了会不会越吃越多"，
@@ -433,23 +420,21 @@ const server = createServer(async (req, res) => {
       const from = Number(body.from), to = Number(body.to);
 
       if (!userMayMoveNow(pos)) {
-        // 红方回合且不在黑方先走模式 → 用户不能替红方走（引擎自己会走）
         return send(res, 400, {
-          error: '现在轮到红方（引擎），请先点「切换到黑方先走」',
+          error: game.moves.length === 0
+            ? '开局红方先行：请点「让引擎先走」，或点「换边」改执红'
+            : `现在轮到${sideName(pos.turn)}（引擎），请稍候`,
           state: statePayload(),
         });
       }
 
-      // 黑方先走模式下第一次走子：允许走黑棋，即使当前局面记的是红方回合
-      const isBlackFirstMove = game.blackFirst && game.moves.length === 0 && pos.turn === RED;
-      const side = isBlackFirstMove ? BLACK : pos.turn;
+      const side = pos.turn;
       const legal = pos.generateLegalMoves(side).find((m) => m.from === from && m.to === to);
       if (!legal) return send(res, 400, { error: '非法着法', state: statePayload() });
 
       game.notation.push(toChineseNotation(pos, legal));
       game.moves.push(moveToUci(legal));
-      // 轮走方不用在这里手工翻转：currentPosition() 会按 blackFirst + 步数奇偶推导，
-      // 黑方先走模式下这一步走完即"轮到红方"，引擎随即接管应手。
+      // 轮走方由 moves 重建；用户走完这一方后，advance() 会接着走引擎那一方。
 
       const engineMoves = await advance({ allowEngine: true });
       return send(res, 200, { ok: true, engineMoves, state: statePayload() });
@@ -457,12 +442,13 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'POST' && path === '/api/undo') {
       if (game.thinking) return send(res, 409, { error: '引擎正在思考，请稍候' });
-      // 悔棋退回到"轮到黑方"的状态：撤到黑方该走的那个点
+      if (!game.moves.length) return send(res, 200, { ok: true, state: statePayload() });
+      // 悔棋退回到"轮到用户执子"的时刻：执黑、执红都适用，不会退成半个回合。
       let guard = 0;
       do {
         game.moves.pop();
         game.notation.pop();
-      } while (game.moves.length && currentPosition().turn === RED && ++guard < 4);
+      } while (game.moves.length && currentPosition().turn !== game.userColor && ++guard < 4);
       game.result = null;
       game.analysis = null;         // 局面变了，旧分析必须丢掉
       // 重算分析
@@ -484,30 +470,31 @@ const server = createServer(async (req, res) => {
       game.result = null;
       // 必须同时清掉分析：否则棋谱显示"尚未走子"、而分析面板还挂着上一局的评估与候选着法
       game.analysis = null;
-      game.blackFirst = false;      // 新一局回到默认：红方先走
-      // 开局局面轮到红方，引擎不会自动走 —— 等用户按「引擎先走」或「切换黑方先走」
+      // 新一局保留用户已选的执子（换边是选边，不是临时状态）。
+      // 红方先行且引擎不会自动走：用户执黑时等「让引擎先走」；用户执红时用户直接走。
+      // 开局局面轮到红方。
       return send(res, 200, { ok: true, state: statePayload() });
     }
 
-    if (req.method === 'POST' && path === '/api/engine-first') {
-      // 「切换到黑方先走」：**引擎原地不动**，只是允许用户在红方回合先走一步黑棋。
-      // 用户走完这步之后，轮到红方，引擎才接管应手。
-      // （接口路径保留 /api/engine-first 是为了兼容既有调用，语义见 game.blackFirst 注释。）
+    if (req.method === 'POST' && path === '/api/swap-sides') {
+      // 「换边」：只在对局开始前切换用户执红/执黑。引擎固定执另一方，红方永远先行。
       if (game.thinking) return send(res, 409, { error: '引擎正在思考，请稍候' });
       if (game.moves.length) {
-        return send(res, 400, { error: '只能在开局时切换（已经走过棋了）', state: statePayload() });
+        return send(res, 400, { error: '只能在对局开始前换边（已经走过棋了）', state: statePayload() });
       }
-      game.blackFirst = true;
-      // 刻意不调用 advance()：这一步就是"引擎先不动"
+      game.userColor = other(game.userColor);
+      game.analysis = null;   // 换边后"轮到谁/谁在分析"的语义变了，旧候选面板不再对应当前执子
       return send(res, 200, { ok: true, state: statePayload() });
     }
 
     if (req.method === 'POST' && path === '/api/red-first') {
-      // 「让引擎先走」：红方先手，引擎立刻走一步（正常开局）
+      // 「让引擎先走」：引擎执红、红方先手时立刻走一步（用户执黑时的正常开局）
       if (game.thinking) return send(res, 409, { error: '引擎正在思考，请稍候' });
       if (game.moves.length) return send(res, 400, { error: '只能在开局时使用', state: statePayload() });
+      if (game.userColor !== BLACK) {
+        return send(res, 400, { error: '你已选择执红，红方先行，直接走棋即可', state: statePayload() });
+      }
       if (!engine?.ready) return send(res, 503, { error: '引擎未就绪', state: statePayload() });
-      game.blackFirst = false;
       const engineMoves = await advance({ allowEngine: true });
       return send(res, 200, { ok: true, engineMoves, state: statePayload() });
     }
@@ -545,11 +532,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const pos = currentPosition();
       const from = Number(body.from);
-      // 默认用局面轮走方；但黑方先走模式下红方回合时用户走的是黑棋，
-      // 所以要按"用户此刻实际能走的那一方"来算落点，否则会给出红方的着法。
-      const side = userMayMoveNow(pos)
-        ? (game.blackFirst && game.moves.length === 0 && pos.turn === RED ? BLACK : pos.turn)
-        : pos.turn;
+      // 用户能走时用用户执子；否则（例如陈旧/越权请求）用局面轮走方。
+      const side = userMayMoveNow(pos) ? game.userColor : pos.turn;
       const targets = pos.generateLegalMoves(side)
         .filter((m) => m.from === from)
         .map((m) => m.to);

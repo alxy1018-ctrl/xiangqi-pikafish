@@ -2,11 +2,11 @@
 
 中文 | [English](README.en.md)
 
-> **Chinese chess against Pikafish, running locally.** A single-page board with a live analysis panel (evaluation, depth, candidate moves) and a 7-step strength slider. The engine plays Red, you play Black; engine and NNUE weights are bundled, so a clone plus `start.cmd` is all it takes. Full English documentation: **[README.en.md](README.en.md)**.
+> **Chinese chess against Pikafish, running locally.** A single-page board with a live analysis panel (evaluation, depth, candidate moves) and a 7-step strength slider. You pick either side (default: engine Red, you Black), and Red always moves first; engine and NNUE weights are bundled, so a clone plus `start.cmd` is all it takes. Full English documentation: **[README.en.md](README.en.md)**.
 > The interface itself is in Chinese, and the English document quotes its strings as-is.
 
-一个本地跑的中国象棋对弈页面：**Pikafish 引擎执红方（棋盘下方），你执黑方（上方）**，
-带实时分析面板（评估分、搜索深度、候选着法）和棋力难度滑块。
+一个本地跑的中国象棋对弈页面：**Pikafish 引擎和你任选一边执子**（默认你执黑、引擎执红），
+**AI 永远在棋盘下方、你在上方，换边时整盘翻转 180°**。带实时分析面板（评估分、搜索深度、候选着法）和棋力难度滑块。红方永远先行。
 
 界面参考了象棋 AI 在线分析网站的布局：左侧棋盘、右侧分析面板。
 
@@ -66,15 +66,16 @@ start.cmd
 
 | 按钮 | 效果 |
 | --- | --- |
-| **切换到黑方先走** | 引擎**原地不动**，直接轮到你走黑方第一步。你走完，引擎才接管红方应手，此后黑白交替 |
-| **让引擎先走** | 红方先手，引擎立刻落子，然后轮到你 |
+| **换边** | 在「你执红 / 你执黑」之间切换。切到执红时棋盘**翻转 180°**（你执红在上、引擎执黑在下），你可以直接走红方第一步；切回执黑时棋盘翻回、红方仍归引擎，点「让引擎先走」开局 |
+| **让引擎先走** | 你执黑时，引擎执红先落子，然后轮到你 |
 
-两个按钮都**只在开局可用**（走过棋之后就禁用了）。「重新开始」会回到默认的红方先行。
+两个按钮都**只在开局可用**（走过任意一步后禁用）。**「重新开始」保留你当前的执子选择。**
 
-> 「黑方先走」的实现说明：你那步黑棋是**抢在红方之前**走的。
-> 引擎内部对局面的理解仍是"红方未动"，所以必须用 FEN 而不是走子序列下发局面 ——
-> `position startpos moves ...` 隐含红先，第一步下黑棋会让 Pikafish 直接崩掉
-> （实测 exit code 1）。细节见下面「三个必须知道的实现约定」那节。
+> 「换边」只是选边，不会替你把棋走起来：切到执黑后仍要点「让引擎先走」；
+> 切到执红时红方先行，直接走你的红棋即可。
+>
+> 换边只翻转**显示**：内部坐标、棋谱、候选着法都不变，棋子文字和「楚河汉界」始终正立；
+> 引擎永远在下方，你永远在上方。
 
 ---
 
@@ -82,14 +83,14 @@ start.cmd
 
 | 区域 | 内容 |
 | --- | --- |
-| 棋盘 | 点击自己的棋子选中，蓝色圆点/圆圈标出可落点，再点目标格完成走子 |
+| 棋盘 | 点击自己的棋子选中，蓝色圆点/圆圈标出可落点，再点目标格完成走子。AI 始终在下方、你始终在上方，换边时整盘翻转 180° |
 | 引擎分析 | 红方视角的评估分、搜索深度、节点数、速度、胜率（WDL） |
 | 候选着法 | 引擎给出的前 3 个选择及各自评分，中文记谱 |
 | 棋谱 | 逐步记录，格式如 `1 炮二平五 卒3进1`，同名同线棋子用「前/后」区分 |
 | 难度滑块 | 7 档，从「入门」到「满血」，改完立即生效 |
 
-**按钮**：切换到黑方先走 / 让引擎先走 / 重新开始 / 悔棋 / 分析当前局面
-**快捷键**：`u` 悔棋、`n` 新局、`a` 分析、`b` 切换到黑方先走、`r` 让引擎先走
+**按钮**：换边 / 让引擎先走 / 重新开始 / 悔棋 / 分析当前局面
+**快捷键**：`u` 悔棋、`n` 新局、`a` 分析、`b` 换边、`r` 让引擎先走
 
 ---
 
@@ -126,12 +127,12 @@ start.cmd
 └── test/
     ├── board.test.mjs           84 项：perft、四类特殊规则、将死、坐标回归
     ├── engine.test.mjs          24 项：握手、搜索、超时、关闭、与规则引擎交叉验证
-    ├── api.test.mjs             74 项：端到端流程、语义三段式、非法着法、悔棋、难度
-    ├── frontend.test.mjs        49 项：把前端/集成 bug 的根因固化成断言
+    ├── api.test.mjs             99 项：端到端流程、换边、非法着法、悔棋、难度
+    ├── frontend.test.mjs        56 项：把前端/集成 bug 的根因固化成断言
     ├── perft-crosscheck.test.mjs 用 Pikafish 做独立裁判比对 perft（19 项）
     ├── leak-probe.mjs           内存累积探测（连续分析，看是否泄漏）
     ├── orphan-probe.mjs         异常退出是否留下孤儿引擎
-    ├── fen-probe.mjs            验证引擎对 FEN 的支持（黑方先走模式的前提）
+    ├── fen-probe.mjs            验证引擎对 FEN 的支持（含黑先的合成局面）
     └── drill.test.mjs           对局演练脚本（人工观察用）
 ```
 
@@ -158,7 +159,10 @@ $node = 'C:\Users\LXY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bi
 
 ### 验证强度
 
-- **231 项断言全部通过**（84 + 24 + 74 + 49，三处数字由 2026-10-16 重跑四套测试实测）。
+- **换边翻转实测**：真实浏览器里，换边前内部红车（idx 81）显示 cy=534（下方）、黑车（idx 0）cy=30（上方）；
+  点「换边」后红车 cy=30、黑车 cy=534，红方合法落点落在上半盘；点上半盘落点走子成功，
+  引擎黑方应手，上一步标记落在下半盘；再点「换边」后红车 cy=534、黑车 cy=30，翻回默认方向。
+- **263 项断言全部通过**（84 + 24 + 99 + 56，数字由 2026-10-25 重跑四套测试实测）。
 - **perft 交叉验证 19/19 一致**：我的 JS 规则引擎与 Pikafish（独立 C++ 实现）在 6 个
   不同局面上给出完全相同的节点数，包括开局 `depth 4 = 3,290,240`
   （这个数另用 Pikafish 自带的 `go perft 4` 直接核过）。
@@ -171,7 +175,7 @@ $node = 'C:\Users\LXY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bi
 
 ---
 
-## 两个必须知道的实现约定
+## 三个必须知道的实现约定
 
 ### 1. 坐标系统：rank 方向相反（踩过坑）
 
@@ -188,27 +192,18 @@ file（a–i）两套一致，**只有 rank 需要 `9 - rank` 翻转**。
 **铁律**：`toEngineSquare` / `fromEngineSquare` 是**唯一**允许做这个转换的地方。
 任何其它位置直接拼 rank 数字都是 bug——早期版本漏了一处，表现为候选着法里的棋子名显示成 `?`。
 
-### 2. 局面唯一事实来源是 `moves` 数组，但**轮走方要按模式推导**
+### 2. 局面唯一事实来源是 `moves` 数组，**轮走方也由它推导**
 
-引擎侧局面**永远**由 `moves` 推导，本地不维护第二份局面。
+引擎侧局面**永远**由 `moves` 重建，本地不维护第二份局面。
 
-但轮走方不能简单地"走一步翻一次"——黑方先走模式下，用户那步黑棋是**抢在红方之前**走的，
-所以两种模式的奇偶关系是反的：
-
-| 模式 | 奇数步走完后 | 偶数步走完后 |
-| --- | --- | --- |
-| 常规（红先） | 该**黑**方走 | 该**红**方走 |
-| 黑方先走 | 该**红**方走（引擎接管） | 该**黑**方走 |
-
-这段逻辑集中在 `server.js` 的 `currentPosition()` 里，改之前先看懂它。
+红方永远先行，合法的走子序列严格交替，所以轮走方直接由步数奇偶决定：
+奇数步后轮到黑方，偶数步后轮到红方。`currentPosition()` 只做重建，不再按模式手工修正 ——
+换边只改变"用户执哪一方"，不改变棋局本身。
 
 ### 3. 下发局面一律用 FEN，不用走子序列
 
-`position startpos moves ...` 隐含**红先**。黑方先走模式的走子序列以黑棋开头，
-直接下发会让 Pikafish 崩掉（实测 exit code 1，或挂死不返回 bestmove）。
-
-所以 `engineRequest()` 统一用 `position fen <当前局面>` 下发，把轮走方如实写进 FEN。
-正常局面下这与走子序列完全等价，少一套分支就少一个踩坑点。
+`position startpos moves ...` 隐含**红先**，而且要求从开局严格交替下发；这里已经有完整局面，
+直接发 FEN 把轮走方显式带上，少一套"什么时候能用 startpos"的判断。FEN 也是引擎直接支持的形式。
 
 **铁律**：任何调用 `engine.search()` 的地方都必须经过 `engineRequest()`。
 
@@ -271,10 +266,8 @@ Get-Process -Name 'Pikafish*' -ErrorAction SilentlyContinue | Stop-Process -Forc
   真出现循环需要你手动「重新开始」。
 - **悔棋只退回到你该走的时刻**，不会退成"半个回合"。
 - 引擎是**单实例长连接**，分析与对弈共用它，所以分析期间不能同时走子。
-- **不能替红方代走**。红方一律归引擎 —— 早先版本允许代走，但那会让引擎的红方与用户
-  交错走子、语义含混，已被「切换到黑方先走」取代。
-- 黑方先走模式下**棋谱按实际走子顺序记录**（第 1 步就是黑棋），
-  与"红方未动"的内部视角不同，这是刻意的：棋谱反映你实际看到的过程。
+- **不能替对方走子**。引擎固定执你对面的一方：你执黑时红方归引擎，你执红时黑方归引擎。
+- **换边只在对局开始前可用**；对局中不能更换执子。「重新开始」保留你当前的执子选择。
 
 ---
 

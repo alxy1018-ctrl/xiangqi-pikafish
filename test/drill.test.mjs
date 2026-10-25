@@ -26,7 +26,7 @@ await api('/api/new', {});
 let s = await show('重置后');
 
 console.log('  让引擎先走…');
-await api('/api/engine-first', {});
+await api('/api/red-first', {});
 s = await show('引擎先走后');
 
 console.log('=== 2. 用户执黑走三步，每步后引擎应手 ===');

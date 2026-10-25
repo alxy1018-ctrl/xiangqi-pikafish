@@ -112,7 +112,7 @@
     </div>
     <svg id="board" viewBox="0 0 540 600" aria-label="中国象棋棋盘"></svg>
     <div class="controls">
-      <button id="btn-black-first" class="primary">切换到黑方先走</button>
+      <button id="btn-swap-sides" class="primary" title="开局时可以切换你执红还是执黑">换边</button>
       <button id="btn-red-first">让引擎先走</button>
       <button id="btn-new">重新开始</button>
       <button id="btn-undo">悔棋</button>
@@ -182,6 +182,15 @@ let selected = null;      // 当前选中的起点索引
 let legalTargets = [];    // 选中棋子的合法落点
 let busy = false;
 
+// 显示不变量：**用户永远在上方，引擎永远在下方。**
+// 默认用户执黑：棋盘黑上红下；换边到用户执红时整盘翻转 180°（file、rank 同时镜像），
+// 红上黑下 —— 引擎的黑棋仍在下方、你的红棋在上方。
+// 只镜像动态层（棋子/落点/上一步/将军圈）的显示坐标，棋盘底图和棋子文字保持正立；
+// 棋谱与候选着法用标准中文记谱，本来就从行棋方视角书写，不随屏幕方向改变。
+const isFlipped = () => state?.userColor === 'red';
+const sx = (f) => cx(isFlipped() ? 8 - f : f);
+const sy = (r) => cy(isFlipped() ? 9 - r : r);
+
 // ---------------------------------------------------------------------------
 // 静态棋盘（只画一次）
 //
@@ -198,6 +207,9 @@ const layerPieces = el('g');
 svg.append(layerBase, layerMarks, layerPieces);
 
 function drawBoardBase() {
+  // 底图对 180° 翻转是自对称的：横竖线贯通/断开方式一致，上下各有一个九宫，
+  // 河界在正中。换边时只镜像动态层（棋子/落点/上一步/将军圈），底图不重绘，
+  // 楚河汉界文字保持正立 —— 不要为了「翻转」去搬底图坐标。
   const defs = el('defs');
   const grad = el('linearGradient', { id:'woodGrad', x1:'0', y1:'0', x2:'1', y2:'1' });
   grad.append(el('stop', { offset:'0%',  'stop-color':'#e8c88f' }));
@@ -274,7 +286,7 @@ function render() {
       const r = 9 - Number(engineSq[1]);
       if (f < 0 || f > 8 || r < 0 || r > 9) continue;
       layerMarks.append(el('rect', {
-        x:cx(f)-R-3, y:cy(r)-R-3, width:(R+3)*2, height:(R+3)*2, rx:6, class:'lastmove',
+        x:sx(f)-R-3, y:sy(r)-R-3, width:(R+3)*2, height:(R+3)*2, rx:6, class:'lastmove',
       }));
     }
   }
@@ -284,7 +296,7 @@ function render() {
     const f = fileOf(t), r = rankOf(t);
     const occupied = board[t] !== '.';
     layerMarks.append(el('circle', {
-      cx:cx(f), cy:cy(r), r: occupied ? R : 8,
+      cx:sx(f), cy:sy(r), r: occupied ? R : 8,
       class: occupied ? 'hint cap' : 'hint',
     }));
   }
@@ -296,18 +308,18 @@ function render() {
     const f = fileOf(i), r = rankOf(i);
     const red = isRedPiece(p);
     const g = el('g', { class:'piece' + (selected === i ? ' sel' : ''), 'data-idx':String(i) });
-    g.append(el('circle', { cx:cx(f), cy:cy(r), r:R, class:'body',
+    g.append(el('circle', { cx:sx(f), cy:sy(r), r:R, class:'body',
       fill: red ? 'url(#pieceLight)' : 'url(#pieceDark)',
       stroke: red ? '#a8332f' : '#12151a', 'stroke-width':2 }));
-    g.append(el('circle', { cx:cx(f), cy:cy(r), r:R-4, fill:'none',
+    g.append(el('circle', { cx:sx(f), cy:sy(r), r:R-4, fill:'none',
       stroke: red ? 'rgba(168,51,47,.55)' : 'rgba(255,255,255,.28)', 'stroke-width':1 }));
-    const t = el('text', { x:cx(f), y:cy(r)+8, 'text-anchor':'middle', 'font-size':26,
+    const t = el('text', { x:sx(f), y:sy(r)+8, 'text-anchor':'middle', 'font-size':26,
       fill: red ? '#b3271f' : '#f0f2f5' });
     t.textContent = PIECE_NAMES[p];
     g.append(t);
     // 被将军的将/帅加红圈
     if ((p === 'K' || p === 'k') && state.check && ((p === 'K') === (state.turn === 'red'))) {
-      layerMarks.append(el('circle', { cx:cx(f), cy:cy(r), r:R+4, class:'checkmark' }));
+      layerMarks.append(el('circle', { cx:sx(f), cy:sy(r), r:R+4, class:'checkmark' }));
     }
     layerPieces.append(g);
   }
@@ -318,7 +330,7 @@ function render() {
 // ---------------------------------------------------------------------------
 svg.addEventListener('click', async (ev) => {
   if (!state || busy || state.result) return;
-  // 服务端说现在不能走子（例如红方回合、且没开黑方先走），直接忽略点击
+  // 服务端说现在不能走子（轮不到你，或引擎正在思考），直接忽略点击
   if (state.canUserMove === false) return;
   const target = ev.target.closest('.piece');
   const rect = svg.getBoundingClientRect();
@@ -329,10 +341,9 @@ svg.addEventListener('click', async (ev) => {
     const i = Number(target.dataset.idx);
     const p = state.board[i];
     if (selected !== null && legalTargets.includes(i)) return doMove(selected, i);
-    // 用户执黑：只能选黑棋。
-    // 注意**不能**用 state.turn 判断 —— 黑方先走模式下局面记的是红方回合，
-    // 但此时允许用户走黑棋。谁能走由服务端给的 canUserMove 决定。
-    if (isRedPiece(p)) { selected = null; legalTargets = []; render(); return; }
+    // 只能选「自己执的那一方」的棋子。执红还是执黑由 state.userColor 决定 ——
+    // 换边之后这里必须跟着变，不能写死黑棋。谁能走由服务端给的 canUserMove 决定。
+    if (isRedPiece(p) !== (state.userColor === 'red')) { selected = null; legalTargets = []; render(); return; }
     selected = i;
     legalTargets = await fetchLegal(i);
     render();
@@ -346,7 +357,8 @@ svg.addEventListener('click', async (ev) => {
     const f = Math.round((px - MARGIN_X) / CELL);
     const r = Math.round((py - MARGIN_Y) / CELL);
     if (f >= 0 && f < 9 && r >= 0 && r < 10) {
-      const i = idx(f, r);
+      // 棋盘翻转时，屏幕格 (f, r) 对应内部格 (8-f, 9-r) —— 与 sx/sy 的 180° 镜像互逆。
+      const i = isFlipped() ? idx(8 - f, 9 - r) : idx(f, r);
       if (legalTargets.includes(i)) return doMove(selected, i);
     }
   }
@@ -406,19 +418,18 @@ function applyState(s) {
     st.className = 'status';
     st.innerHTML = '<span class="spin"></span> 引擎思考中…';
   } else if (s.canUserMove) {
-    // 注意：黑方先走模式下局面记的是"红方回合"，但实际该用户走黑棋，
-    // 所以这里以 canUserMove 为准，不能直接看 s.turn
-    st.className = 'status turn-black';
-    st.textContent = s.check ? '黑方被将军 · 轮到你走' : '轮到你走（黑方）';
-  } else if (s.turn === 'black') {
-    st.className = 'status turn-black';
-    st.textContent = '轮到你走（黑方）';
+    // 谁能走由服务端给的 canUserMove 决定（换边后用户执子会变），不能写死黑方。
+    const side = s.userColor === 'red' ? '红方' : '黑方';
+    st.className = 'status turn-' + s.userColor;
+    st.textContent = s.check ? `你被将军 · 轮到你走（${side}）` : `轮到你走（${side}）`;
   } else if (s.atStart) {
+    // 还没走子、轮到引擎：只有用户执黑时会出现（执红时红方就是用户，早已轮到你走）。
     st.className = 'status turn-red';
-    st.textContent = '轮到红方 · 点「切换到黑方先走」或「让引擎先走」';
+    st.textContent = '轮到红方 · 点「换边」改执红，或点「让引擎先走」';
   } else {
-    st.className = 'status turn-red';
-    st.textContent = s.check ? '红方被将军 · 引擎应手' : '轮到红方（引擎）';
+    const side = s.turn === 'red' ? '红方' : '黑方';
+    st.className = 'status turn-' + s.turn;
+    st.textContent = s.check ? `${side}被将军 · 引擎应手` : `轮到${side}（引擎）`;
   }
 
   if (s.engineError) showErr(s.engineError);
@@ -430,9 +441,15 @@ function applyState(s) {
   document.getElementById('lv-name').textContent = lvInfo ? lvInfo.name : '—';
 
   // 按钮可用性
-  // 两个"谁先走"按钮只在开局、且引擎没在忙时可用
-  document.getElementById('btn-black-first').disabled = busy || !s.atStart || s.blackFirst || Boolean(s.result);
-  document.getElementById('btn-red-first').disabled = busy || !s.atStart || s.blackFirst || !s.engineReady || Boolean(s.result);
+  // 「换边」只在对局开始前可用；「让引擎先走」只在用户执黑、且引擎可用时才有意义。
+  const swap = document.getElementById('btn-swap-sides');
+  swap.disabled = busy || !s.atStart || Boolean(s.result);
+  swap.textContent = s.userColor === 'black' ? '换边（改执红）' : '换边（改执黑）';
+  const engineFirst = document.getElementById('btn-red-first');
+  engineFirst.disabled = busy || !s.atStart || s.userColor !== 'black' || !s.engineReady || Boolean(s.result);
+  engineFirst.title = s.userColor === 'red'
+    ? '你执红，红方先行，直接走棋即可'
+    : '让引擎执红先走';
   document.getElementById('btn-new').disabled = busy;
   document.getElementById('btn-undo').disabled = busy || s.moves.length === 0;
   document.getElementById('btn-analyze').disabled = busy || !s.engineReady;
@@ -561,7 +578,7 @@ async function post(path, body) {
   if (state) applyState(state);
 }
 
-document.getElementById('btn-black-first').onclick = () => post('/api/engine-first');
+document.getElementById('btn-swap-sides').onclick = () => { selected = null; legalTargets = []; post('/api/swap-sides'); };
 document.getElementById('btn-red-first').onclick = () => post('/api/red-first');
 document.getElementById('btn-new').onclick = () => { selected = null; legalTargets = []; post('/api/new'); };
 document.getElementById('btn-undo').onclick = () => { selected = null; legalTargets = []; post('/api/undo'); };
@@ -617,7 +634,7 @@ function stateSignature(s) {
     s.thinking ? 1 : 0,
     s.result ? 1 : 0,
     s.analysis ? s.analysis.depth : 0,
-    s.blackFirst ? 1 : 0,
+    s.userColor === 'red' ? 1 : 0,
     s.canUserMove ? 1 : 0,
   ].join('|');
 }
@@ -643,7 +660,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'u') document.getElementById('btn-undo').click();
   if (e.key === 'n') document.getElementById('btn-new').click();
   if (e.key === 'a') document.getElementById('btn-analyze').click();
-  if (e.key === 'b') document.getElementById('btn-black-first').click();
+  if (e.key === 'b') document.getElementById('btn-swap-sides').click();
   if (e.key === 'r') document.getElementById('btn-red-first').click();
 });
 </script>

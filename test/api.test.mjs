@@ -22,41 +22,46 @@ async function api(path, body) {
 function verifyConsistency(label, state) {
   const pos = positionFromMoves(state.moves);
   eq(`${label}：局面与走子序列一致`, pos.board.join(''), state.board);
-  // 轮走方不能只靠"重放 moves"推导 —— 黑方先走模式下奇偶关系是反的
-  // （第 1 步是黑棋抢走，走完仍该红方）。所以这里按模式算期望值。
-  const odd = state.moves.length % 2 === 1;
-  const blackFirstActive = state.blackFirst && state.moves.length > 0;
-  const expectTurn = blackFirstActive ? (odd ? 'red' : 'black') : (odd ? 'black' : 'red');
+  // 红方永远先行，走子序列严格交替：奇数步后轮到黑方，偶数步后轮到红方。
+  const expectTurn = state.moves.length % 2 === 1 ? BLACK : RED;
   eq(`${label}：轮走方一致`, state.turn, expectTurn);
   eq(`${label}：棋谱数与走子数一致`, state.notation.length, state.moves.length);
+  ok(`${label}：userColor 合法`, state.userColor === RED || state.userColor === BLACK, state.userColor);
+}
+
+/** 把服务端的执子切到指定一方（只允许在开局调用；测试用于消除上一条用例的残留状态）。 */
+async function ensureUserColor(color) {
+  const s = (await api('/api/state')).data;
+  if (s.moves.length) throw new Error('ensureUserColor 需要开局局面');
+  if (s.userColor === color) return s;
+  const r = await api('/api/swap-sides', {});
+  if (r.status !== 200) throw new Error('换边失败：' + (r.data.error ?? r.status));
+  return r.data.state;
 }
 
 async function main() {
   // ---- 重置到干净开局 ----
   await api('/api/new', {});
-  let s = (await api('/api/state')).data;
+  let s = await ensureUserColor(BLACK);   // 服务可能是别人用过的，先确保默认执黑
   eq('开局无走子', s.moves.length, 0);
   eq('开局轮到红方', s.turn, RED);
+  eq('开局默认用户执黑', s.userColor, BLACK);
   ok('引擎就绪', s.engineReady, s.engineError);
   verifyConsistency('开局', s);
 
-  // ---- 语义验证：开局是红方回合，用户不能替黑方先走 ----
-  // （产品设计：引擎恒执红、红先。用户执黑，所以开局应先让引擎走，见下。）
+  // ---- 语义验证：开局是红方回合，用户执黑时不能先动黑棋 ----
   const illegalFirst = await api('/api/move', { from: idx(2, 3), to: idx(2, 4) });
   ok('开局替黑方走子被拒绝（还没轮到黑方）', illegalFirst.status === 400, illegalFirst.status);
 
-  // ---- 用户"代走红方"：三段式完整验证 ----
-  // 语义验证（当前设计）：用户**不能**替红方代走。
-  // 早先版本允许"代走红方"，后来被明确的「切换到黑方先走」按钮取代 ——
-  // 因为代走会让引擎的红方与用户交错走子，语义含混。现在红方一律归引擎。
+  // ---- 用户执黑时不能动红方（红方归引擎）----
   const redProxy = { from: idx(0, 9), to: idx(0, 8) };   // 红车九进一（a9→a8）
   let r = await api('/api/move', redProxy);
-  ok('① 开局不能替红方代走', r.status === 400, r.status);
+  ok('① 用户执黑时不能动红方', r.status === 400, r.status);
   s = (await api('/api/state')).data;
   eq('① 被拒后局面未变', s.moves.length, 0, s.moves);
   eq('① 仍是红方回合', s.turn, RED);
 
-  // 黑方先走模式的完整验证见文件后半部分。
+  // 换边后的完整验证见文件后半部分。
   await api('/api/new', {});   // 复位，下面按正常流程测
 
   // ---- 正常流程：让引擎（红方）先走 ----
@@ -124,7 +129,7 @@ async function main() {
   const fromEmpty = await api('/api/move', { from: emptyFrom, to: emptyFrom });
   ok('从空格起手被拒绝', fromEmpty.status === 400, fromEmpty.status);
 
-  // ---- 悔棋：应回到"轮到黑方"的状态，且局面与走子序列重新一致 ----
+  // ---- 悔棋：应回到"轮到用户"的状态，且局面与走子序列重新一致 ----
   const beforeUndo = (await api('/api/state')).data;
   const movesBefore = beforeUndo.moves.length;
   r = await api('/api/undo', {});
@@ -146,59 +151,81 @@ async function main() {
   ok('满级难度下引擎仍能应手', r.status === 200 && r.data.state.moves.length >= 3, r.data.error ?? r.data.state?.moves?.length);
   await api('/api/level', { level: 3 });
 
-  // ---- 两个"谁先走"接口都只在开局可用 ----
-  const again = await api('/api/engine-first', {});
-  ok('非开局时 切换到黑方先走 被拒绝', again.status === 400, again.status);
+  // ---- 「换边」「让引擎先走」都只在开局可用 ----
+  const againSwap = await api('/api/swap-sides', {});
+  ok('非开局时换边被拒绝', againSwap.status === 400, againSwap.status);
   const againRed = await api('/api/red-first', {});
   ok('非开局时 让引擎先走 被拒绝', againRed.status === 400, againRed.status);
 
-  // ---- 黑方先走模式（用户要求：按一下按钮切过来，引擎原地不动）----
-  // 语义：① 切换后引擎**不动**、仍是 0 步
-  //       ② 此时用户可以走黑棋（虽然局面记的是红方回合）
-  //       ③ 用户走完黑方第一步，引擎立刻接管红方应手
+  // ---- 换边（用户要求：开局可以选执红，红方先行；引擎执黑应手）----
   await api('/api/new', {});
-  r = await api('/api/engine-first', {});
-  ok('① 切换到黑方先走成功', r.status === 200, r.data.error);
+  await ensureUserColor(BLACK);
+  r = await api('/api/swap-sides', {});
+  ok('① 开局换边成功', r.status === 200, r.data.error);
   s = r.data.state;
-  eq('① 切换后引擎不动（仍是 0 步）', s.moves.length, 0, s.moves);
-  ok('① 状态里 blackFirst 已置位', s.blackFirst === true, s.blackFirst);
-  ok('① 状态里标记了"用户可以走子"', s.canUserMove === true, s.canUserMove);
-  eq('① 局面仍记红方回合（引擎的红方未动）', s.turn, RED);
+  eq('① 换边后用户执红', s.userColor, RED);
+  eq('① 换边后仍是 0 步', s.moves.length, 0, s.moves);
+  eq('① 红方先行、轮到红方', s.turn, RED);
+  ok('① 用户可以立刻走红棋', s.canUserMove === true, s.canUserMove);
+  ok('① 换边本身不让引擎先走', s.thinking === false, s.thinking);
 
-  // ② 用户走黑方第一步。注意这步用黑方着法生成器校验
-  const bfMove = { from: idx(2, 3), to: idx(2, 4) };   // 黑卒 3 进 1
-  r = await api('/api/move', bfMove);
-  ok('② 黑方先走模式下可以走黑棋', r.status === 200, r.data.error);
+  // ① 用户执红走第一步；引擎必须以黑方应手。
+  const redMove = positionFromMoves([]).generateLegalMoves(RED)[0];
+  const redUci = moveToUci(redMove);
+  r = await api('/api/move', { from: redMove.from, to: redMove.to });
+  ok('② 用户执红走子被接受', r.status === 200, r.data.error);
   s = r.data.state;
   eq('② 走完后共 2 步（用户 1 + 引擎应手 1）', s.moves.length, 2, s.moves);
-  eq('② 第 1 步是用户走的黑棋', s.moves[0], moveToUci(bfMove));
-  ok('② 第 2 步是引擎应答的红棋', /^[a-i][0-9][a-i][0-9]$/.test(s.moves[1]), s.moves[1]);
-  eq('② 引擎应手后轮到黑方（用户）', s.turn, BLACK);
-  verifyConsistency('② 黑方先走后', s);
+  eq('② 第 1 步是用户走的红棋', s.moves[0], redUci);
+  ok('② 第 2 步是引擎应答的黑棋', /^[a-i][0-9][a-i][0-9]$/.test(s.moves[1]), s.moves[1]);
+  eq('② 引擎应手后轮到红方（用户）', s.turn, RED);
+  eq('② 用户仍执红', s.userColor, RED);
+  verifyConsistency('② 用户执红后', s);
+  const legalBlack = positionFromMoves([redUci]).generateLegalMoves(BLACK).map(moveToUci);
+  ok(`② 引擎应答 ${s.moves[1]} 是黑方的合法着法`, legalBlack.includes(s.moves[1]), legalBlack.slice(0, 5));
 
-  // ③ 引擎那一步必须是"黑方已走第一步"之后红方的合法着法
-  const posAfterBF = positionFromMoves([moveToUci(bfMove)]);
-  const legalRedBF = posAfterBF.generateLegalMoves(RED).map(moveToUci);
-  ok(`③ 引擎应手 ${s.moves[1]} 合法`, legalRedBF.includes(s.moves[1]), legalRedBF.slice(0, 5));
+  // ③ 走过棋之后不能再换边
+  const lateSwap = await api('/api/swap-sides', {});
+  ok('③ 走过棋之后换边被拒绝', lateSwap.status === 400, lateSwap.status);
 
-  // ④ 走子后不能再切换（按钮只该在开局可用）
-  const lateSwitch = await api('/api/engine-first', {});
-  ok('④ 走过棋之后切换被拒绝', lateSwitch.status === 400, lateSwitch.status);
-
-  // ⑤ 未开模式时，红方回合用户不能走黑棋
-  await api('/api/new', {});
-  const noMode = await api('/api/move', { from: idx(2, 3), to: idx(2, 4) });
-  ok('⑤ 未开黑方先走模式时替黑方走子被拒', noMode.status === 400, noMode.status);
-
-  // ⑥ 重新开始必须清掉黑方先走模式
-  await api('/api/engine-first', {});
+  // ④ 「重新开始」保留执子；执红时不需要（也不允许）让引擎先走
   await api('/api/new', {});
   s = (await api('/api/state')).data;
-  ok('⑥ 重新开始后 blackFirst 被清掉', s.blackFirst === false, s.blackFirst);
-  ok('⑥ 重新开始后回到红方回合、用户不能走', s.canUserMove === false, s.canUserMove);
+  eq('④ 重新开始保留执红', s.userColor, RED);
+  eq('④ 重新开始后轮到红方（用户）', s.turn, RED);
+  ok('④ 重新开始后用户可以直接走', s.canUserMove === true, s.canUserMove);
+  const redFirstOnRed = await api('/api/red-first', {});
+  ok('④ 执红时「让引擎先走」被拒绝', redFirstOnRed.status === 400, redFirstOnRed.status);
 
-  // ---- 清理 ----
+  // ⑤ 换回执黑：红方仍是引擎，要按「让引擎先走」才能开局
+  r = await api('/api/swap-sides', {});
+  ok('⑤ 换回执黑成功', r.status === 200, r.data.error);
+  s = r.data.state;
+  eq('⑤ 换回后用户执黑', s.userColor, BLACK);
+  eq('⑤ 换回后轮到红方', s.turn, RED);
+  ok('⑤ 换回后用户不能直接走', s.canUserMove === false, s.canUserMove);
+  const engineStarts = await api('/api/red-first', {});
+  ok('⑤ 让引擎先走成功', engineStarts.status === 200, engineStarts.data.error);
+  s = engineStarts.data.state;
+  eq('⑤ 引擎先走后轮到黑方（用户）', s.turn, BLACK);
+  verifyConsistency('⑤ 引擎先走后', s);
+
+  // ⑥ 执红时悔棋也退回"用户该走"的红方回合
   await api('/api/new', {});
+  await ensureUserColor(RED);
+  const undoRedMove = positionFromMoves([]).generateLegalMoves(RED)[0];
+  r = await api('/api/move', { from: undoRedMove.from, to: undoRedMove.to });
+  ok('⑥ 执红走子成功', r.status === 200, r.data.error);
+  r = await api('/api/undo', {});
+  s = r.data.state;
+  eq('⑥ 悔棋后步数回到 0', s.moves.length, 0, s.moves);
+  eq('⑥ 悔棋后轮到红方', s.turn, RED);
+  eq('⑥ 悔棋后仍执红', s.userColor, RED);
+  ok('⑥ 悔棋后用户可以继续走', s.canUserMove === true, s.canUserMove);
+
+  // ---- 清理：回到默认执黑的干净开局 ----
+  await api('/api/new', {});
+  await ensureUserColor(BLACK);
 
   console.log('\n========================================');
   console.log(`  通过 ${pass.length}   失败 ${fail.length}`);

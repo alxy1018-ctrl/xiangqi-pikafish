@@ -96,7 +96,7 @@ const ok = (n, c, x) => (c ? pass.push(n) : fail.push(n + (x !== undefined ? ' :
   // 用状态指纹比较，否则"重新开始"（步数不变）与"分析更新"会被漏掉
   ok('存在状态指纹函数 stateSignature', /function stateSignature/.test(html));
   ok('指纹包含分析深度（否则分析更新不重画）', /s\.analysis\s*\?\s*s\.analysis\.depth/.test(html));
-  ok('指纹包含 blackFirst（否则切换模式不重画）', /s\.blackFirst/.test(html));
+  ok('指纹包含 userColor（否则换边不重画）', /s\.userColor/.test(html));
   ok('用户选子时暂停轮询（不打断选中态）', /if\s*\(selected\s*!==\s*null\)\s*return/.test(html));
 }
 
@@ -108,26 +108,48 @@ const ok = (n, c, x) => (c ? pass.push(n) : fail.push(n + (x !== undefined ? ' :
   ok('分析按钮走 post()（会自动 applyState 重画）', /post\('\/api\/analyze'/.test(body), body.trim());
 }
 
-// ---------------------------------------------------------------- 黑方先走模式（用户要求的语义）
+// ---------------------------------------------------------------- 换边（用户要求的语义）
 {
-  // 需求：按一下按钮切到"黑方先走"；引擎的红方**原地不动**；等用户走完黑方第一步，引擎才接管。
-  const bf = html.indexOf("getElementById('btn-black-first').onclick");
-  ok('存在「切换到黑方先走」按钮处理', bf >= 0);
-  ok('该按钮调用 /api/engine-first', /post\('\/api\/engine-first'/.test(html.slice(bf, bf + 200)));
+  // 需求：开局可以在「你执红（红先）/ 你执黑（引擎红先）」之间切换；只在对局开始前可用。
+  const sw = html.indexOf("getElementById('btn-swap-sides').onclick");
+  ok('存在「换边」按钮处理', sw >= 0);
+  ok('该按钮调用 /api/swap-sides', /post\('\/api\/swap-sides'/.test(html.slice(sw, sw + 240)));
   const rf = html.indexOf("getElementById('btn-red-first').onclick");
   ok('存在「让引擎先走」按钮处理', rf >= 0);
   ok('该按钮调用 /api/red-first', /post\('\/api\/red-first'/.test(html.slice(rf, rf + 200)));
 
-  // 关键：点击棋子时**不能**用 state.turn 判断谁能走 ——
-  // 黑方先走模式下局面记的是红方回合，但这时该用户走黑棋。
+  // 关键：点击棋子时要按 state.userColor 判断"自己执哪一方"，不能写死黑棋。
   const ci = html.indexOf("svg.addEventListener('click'");
-  const cbody = html.slice(ci, ci + 900);
+  const cbody = html.slice(ci, ci + 1100);
   ok('走子被 canUserMove 门控（而不是只看回合）', /state\.canUserMove\s*===\s*false/.test(cbody), cbody.slice(0, 160));
-  ok('只允许选中黑棋（用户执黑）', /isRedPiece\(p\)/.test(cbody));
+  ok('选子按 userColor 判断己方颜色（换边后仍能选对棋子）',
+    /state\.userColor/.test(cbody) && /isRedPiece\(p\)/.test(cbody), cbody.slice(0, 260));
 
-  // 状态文字在"红方回合但该用户走"时也要显示成轮到你走
+  // 状态文字要按 canUserMove 显示"轮到你走（红方/黑方）"，而不是写死黑方
   ok('状态文字优先按 canUserMove 显示', /else if \(s\.canUserMove\)/.test(html));
-  ok('开局未切换时有引导文案', /切换到黑方先走/.test(html) && /让引擎先走/.test(html));
+  ok('状态文字带当前执子的边名', /轮到你走（\$\{side\}）/.test(html));
+  ok('开局未切换时有引导文案', /换边/.test(html) && /让引擎先走/.test(html));
+  ok('换边按钮 disabled 条件含 atStart', /swap\.disabled[^;]*!s\.atStart/.test(html));
+  ok('执红时「让引擎先走」被禁用', /s\.userColor !== 'black'/.test(html));
+}
+
+// ---------------------------------------------------------------- 换边后棋盘翻转 180°（AI 永远在下方）
+{
+  // 需求：换边不只是换先手，棋盘也要颠倒 —— 用户执红时红上黑下，AI 的黑棋在下。
+  ok('翻转判断只由 userColor 决定', /const isFlipped = \(\) => state\?\.userColor === 'red'/.test(html));
+  ok('显示坐标做 180° 双向镜像（file 8-f、rank 9-r）',
+    /const sx = \(f\) => cx\(isFlipped\(\) \? 8 - f : f\)/.test(html) &&
+    /const sy = \(r\) => cy\(isFlipped\(\) \? 9 - r : r\)/.test(html));
+
+  const rs = html.indexOf('function render()');
+  const re = html.indexOf('\nfunction ', rs + 10);
+  const renderBody = html.slice(rs, re > rs ? re : undefined);
+  ok('棋子/落点/上一步/将军圈都用显示坐标（render 内不再有 cx(f)/cy(r)）',
+    (renderBody.match(/\bsx\(/g)?.length ?? 0) >= 4 &&
+    (renderBody.match(/\bsy\(/g)?.length ?? 0) >= 4 &&
+    !/\bcx\(f\)/.test(renderBody) && !/\bcy\(r\)/.test(renderBody));
+  ok('空位点击把显示格反算回内部 180°',
+    /isFlipped\(\) \? idx\(8 - f, 9 - r\) : idx\(f, r\)/.test(html));
 }
 
 // ---------------------------------------------------------------- 坐标转换的单一出口

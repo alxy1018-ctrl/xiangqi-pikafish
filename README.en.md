@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-A local Chinese chess (xiangqi) board: **the Pikafish engine plays Red (the bottom side), you play Black (the top side)**, with a live analysis panel (evaluation, search depth, candidate moves) and a strength slider.
+A local Chinese chess (xiangqi) board: **you pick either side against the Pikafish engine** (by default the engine plays Red, you play Black), with a live analysis panel (evaluation, search depth, candidate moves) and a strength slider. The AI always sits at the bottom and you at the top; switching sides flips the board 180°. Red always moves first.
 
 The layout follows the online xiangqi analysis sites: board on the left, analysis panel on the right.
 
@@ -52,22 +52,22 @@ Both have bitten on this machine, and both look fine until they run:
 
 The script must also stay **pure ASCII with CRLF** (cmd.exe misparses UTF-8 and bare LF).
 
-### Choosing who moves first
+### Choosing your side
 
 Chinese chess is **Red first**. At the start of a game the page offers a choice:
 
 | Button | Effect |
 | --- | --- |
-| **切换到黑方先走** ("switch to Black moving first") | The engine **stays put** and it is immediately your move as Black. Only after you move does the engine answer as Red, and play alternates from there |
-| **让引擎先走** ("let the engine move first") | Red opens: the engine plays at once, then it is your turn |
+| **换边** ("switch sides") | Toggles between "you are Red" and "you are Black". Switching to Red **flips the board 180°** (you are Red on top, the engine is Black at the bottom) and you move first; switching back to Black restores the board, Red still belongs to the engine, so press 让引擎先走 to open |
+| **让引擎先走** ("let the engine move first") | Only for Black: the engine opens as Red, then it is your turn |
 
-Both buttons **work only at the opening** (they are disabled after the first move). **重新开始** ("restart") returns to the default Red-first.
+Both buttons **work only at the opening** (they are disabled after the first move). **重新开始** ("restart") **keeps the side you chose**.
 
-> How "Black moves first" works: your Black move is played **ahead of** Red.
-> The engine still understands the position as "Red has not moved", so the position must be sent as
-> a FEN rather than a move sequence — `position startpos moves ...` implies Red to move, and playing
-> a Black move first makes Pikafish crash outright (measured: exit code 1). Details in the section
-> "Three implementation conventions" below.
+> 换边 only selects a side; it does not start the game for you. After switching to Black you still press
+> 让引擎先走; as Red you simply make the first move yourself.
+>
+> Switching sides flips the **display** only: internal coordinates, the move list and candidate notation are
+> unchanged, and the piece characters plus 楚河汉界 stay upright. The engine is always at the bottom, you at the top.
 
 ---
 
@@ -75,14 +75,14 @@ Both buttons **work only at the opening** (they are disabled after the first mov
 
 | Area | Contents |
 | --- | --- |
-| Board | Click one of your pieces to select it; blue dots/circles mark legal destinations; click one to move |
+| Board | Click one of your pieces to select it; blue dots/circles mark legal destinations; click one to move. The AI is always at the bottom and you at the top; switching sides flips the whole board 180° |
 | Engine analysis | Evaluation from Red's point of view, search depth, node count, speed, win/draw/loss (WDL) |
 | Candidate moves | The engine's top 3 choices with their scores, in Chinese notation |
 | Move list | Move by move, e.g. `1 炮二平五 卒3进1`; two pieces on the same file are told apart by 前/后 (front/rear) |
 | Difficulty slider | 7 steps, from 入门 (beginner) to 满血 (full strength); takes effect immediately |
 
-**Buttons**: 切换到黑方先走 / 让引擎先走 / 重新开始 / 悔棋 (undo) / 分析当前局面 (analyse current position)
-**Hotkeys**: `u` undo, `n` new game, `a` analyse, `b` Black moves first, `r` engine moves first
+**Buttons**: 换边 (switch sides) / 让引擎先走 / 重新开始 / 悔棋 (undo) / 分析当前局面 (analyse current position)
+**Hotkeys**: `u` undo, `n` new game, `a` analyse, `b` switch sides, `r` engine moves first
 
 ---
 
@@ -118,12 +118,12 @@ Both buttons **work only at the opening** (they are disabled after the first mov
 └── test/
     ├── board.test.mjs           84 items: perft, the four special rules, checkmate, coordinate regression
     ├── engine.test.mjs          24 items: handshake, search, timeout, shutdown, cross-validation against the rules engine
-    ├── api.test.mjs             74 items: end-to-end flow, the three-part semantic response, illegal moves, undo, difficulty
-    ├── frontend.test.mjs        49 items: root causes of past front-end/integration bugs, frozen as assertions
+    ├── api.test.mjs             99 items: end-to-end flow, side switching, illegal moves, undo, difficulty
+    ├── frontend.test.mjs        56 items: root causes of past front-end/integration bugs, frozen as assertions
     ├── perft-crosscheck.test.mjs perft cross-check with Pikafish as an independent judge (19 items)
     ├── leak-probe.mjs           memory-growth probe (continuous analysis, looking for leaks)
     ├── orphan-probe.mjs         does an abnormal exit leave an orphaned engine behind
-    ├── fen-probe.mjs            verifies the engine's FEN support (the premise of Black-moves-first)
+    ├── fen-probe.mjs            verifies the engine's FEN support (including a synthetic Black-to-move position)
     └── drill.test.mjs           game drill script (for human observation)
 ```
 
@@ -150,7 +150,8 @@ $node = 'C:\Users\LXY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bi
 
 ### How strong the verification is
 
-- **231 assertions pass** (84 + 24 + 74 + 49), counted by rerunning all four suites on 2026-10-16.
+- **Board flip measured in a real browser**: before switching, internal Red rook (idx 81) renders at cy=534 (bottom) and Black rook (idx 0) at cy=30 (top); after 换边 the Red rook is at cy=30 and the Black rook at cy=534, the Red legal-destination hints land in the top half, moving from one of them works, the engine answers as Black, and the last-move markers land in the bottom half; pressing 换边 again puts the Red rook back at cy=534 and the Black rook at cy=30 (default orientation).
+- **263 assertions pass** (84 + 24 + 99 + 56), counted by rerunning all four suites on 2026-10-25.
 - **perft cross-check 19/19 identical**: my JS rules engine and Pikafish (an independent C++ implementation) agree on the node count for every test position, including the opening at `depth 4 = 3,290,240` — that figure was confirmed directly from Pikafish's own `go perft 4`.
   This is the **only independent evidence that does not come from my own implementation**, and it exists to rule out the risk that the generator and the checker share the same bias.
 - **A real game played through**: `炮二平五 卒3进1 炮五进四 卒7进1 炮八平五 马2进2 前炮退二`, with every move re-checked for engine move legality and position consistency.
@@ -175,24 +176,15 @@ The evidence: from the standard opening Pikafish's best move is `h2e2` (炮二�
 
 **Iron rule**: `toEngineSquare` / `fromEngineSquare` are the **only** places allowed to do this conversion. Assembling a rank number anywhere else is a bug — an early version missed one spot, and the symptom was piece names showing up as `?` in the candidate list.
 
-### 2. The `moves` array is the single source of truth for the position, but **the side to move is derived from the mode**
+### 2. The `moves` array is the single source of truth for the position — **including the side to move**
 
-The engine's position is **always** derived from `moves`; no second copy of the position is kept locally.
+The engine's position is **always** rebuilt from `moves`; no second copy of the position is kept locally.
 
-The side to move cannot simply be "flip after every move", though — in Black-moves-first mode the user's Black move is played **ahead of** Red, so the parity of the two modes is inverted:
-
-| Mode | After an odd-numbered move | After an even-numbered move |
-| --- | --- | --- |
-| Normal (Red first) | **Black** to move | **Red** to move |
-| Black first | **Red** to move (engine takes over) | **Black** to move |
-
-This logic is concentrated in `currentPosition()` in `server.js`. Understand it before changing it.
+Red always moves first and a legal move sequence strictly alternates, so the side to move follows directly from the move count: after an odd number of moves it is Black's turn, after an even number it is Red's. `currentPosition()` only rebuilds the position and no longer patches parity for a mode — switching sides only changes which side the user owns, not the game itself.
 
 ### 3. Positions are always sent as FEN, never as a move sequence
 
-`position startpos moves ...` implies **Red to move**. In Black-moves-first mode the move sequence starts with a Black move, and sending that directly makes Pikafish crash (measured: exit code 1, or a hang with no `bestmove`).
-
-So `engineRequest()` always sends `position fen <current position>`, writing the side to move faithfully into the FEN. In a normal position this is exactly equivalent to the move sequence, and one fewer branch is one fewer trap.
+`position startpos moves ...` implies **Red to move** and requires a strictly alternating sequence from the opening. We already have the complete position (rebuilt from `moves`), so sending a FEN carries the side to move explicitly and removes one "when is startpos valid" branch. FEN is also a form the engine supports directly.
 
 **Iron rule**: every call to `engine.search()` must go through `engineRequest()`.
 
@@ -242,8 +234,8 @@ Get-Process -Name 'Pikafish*' -ErrorAction SilentlyContinue | Stop-Process -Forc
 - **Perpetual check / the natural-move limit are not adjudicated.** The engine handles repetition internally under Asian rules, but the page does not rule on it; if a cycle appears you have to press 重新开始 yourself.
 - **Undo only goes back to your own turn**, never to "half a move".
 - The engine is **a single long-lived instance** shared by analysis and play, so you cannot move while an analysis is running.
-- **You cannot move for Red.** Red always belongs to the engine — an earlier version allowed it, but that interleaved the engine's Red moves with the user's and muddied the semantics, so it was replaced by 切换到黑方先走.
-- In Black-moves-first mode the **move list records the actual order of play** (move 1 is Black), which differs from the internal "Red has not moved" view. That is deliberate: the move list should reflect what you actually saw.
+- **You cannot move the opponent's side.** The engine always owns the side opposite yours: Red belongs to the engine when you play Black, Black when you play Red.
+- **换边 is only available before the first move**; you cannot change sides mid-game. **重新开始** keeps your chosen side.
 
 ## Engine information
 

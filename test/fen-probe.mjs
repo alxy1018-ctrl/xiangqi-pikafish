@@ -1,7 +1,7 @@
 /**
- * 验证 Pikafish 对 FEN 的支持：格式、能否接受"红方轮走"的自定义局面。
- * 黑方先走模式下必须走 FEN 路线 —— 因为 startpos + 走子序列隐含红先，
- * 第一步下黑棋会让引擎崩掉（已实测 exit code 1）。
+ * 验证 Pikafish 对 FEN 的支持：格式、轮走方字段、以及"黑先"合成局面的搜索。
+ * 这个探针构造的是不经过正常对局流程的合成局面（黑方先动过一步），
+ * 用于确认引擎读 FEN 的轮走方；应用里的正式对局始终红先。
  */
 import { spawn } from 'node:child_process';
 import { Position, idx, positionFromMoves, moveFromUci, moveToUci, RED, BLACK } from '../lib/board.js';
@@ -35,7 +35,7 @@ function runUci(commands, waitFor = 'bestmove', timeoutMs = 30000) {
   });
 }
 
-// 黑方先走一着的局面：黑卒 c3→c4（内部），随后该红方走
+// 合成局面：先走一步黑棋（黑卒 c3→c4，内部），随后该红方走
 const blackFirstPos = positionFromMoves(['c6c5']);   // 引擎坐标 c6c5 = 内部 c3→c4
 console.log('局面推导：');
 console.log('  内部棋盘 c4 格 = "' + blackFirstPos.board[idx(2, 4)] + '"  (期望 p 黑卒已到)');
@@ -51,9 +51,9 @@ try {
   console.log('  bestmove: ' + best + '   （期望 h2e2 之类的红方着法）');
 } catch (e) { console.log('  ❌ ' + e.message); }
 
-console.log('\n=== 测试 2：黑方先走一着后的 FEN（轮红方）+ go depth 8 ===');
+console.log('\n=== 测试 2：黑先合成局面的 FEN（轮红方）+ go depth 8 ===');
 try {
-  // 强制 turn 为红方：黑方先走模式下，轮到的是红方
+  // 强制 turn 为红方：合成局面里黑方已经动过一步，接下来轮到红方
   blackFirstPos.turn = RED;
   const fen2 = blackFirstPos.toFen();
   console.log('  下发的 FEN: ' + fen2);
@@ -72,7 +72,7 @@ try {
   }
 } catch (e) { console.log('  ❌ ' + e.message); }
 
-console.log('\n=== 测试 3：对照 —— 用 startpos moves 下发黑方先走（预期崩溃或异常）===');
+console.log('\n=== 测试 3：对照 —— 用 startpos moves 下发黑先合成局面（预期崩溃或异常）===');
 try {
   const out = await runUci(['position startpos moves c6c5', 'go depth 8'], 'bestmove', 12000);
   console.log('  意外地成功了：' + out.filter((l) => l.startsWith('bestmove')).join(' '));
